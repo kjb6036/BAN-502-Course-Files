@@ -1,0 +1,317 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+```{r}
+# install.packages("caretEnsemble")
+# install.packages("xgboost")
+options.tidyverse.quiet=TRUE
+library(tidyverse)
+library(caret)
+library(nnet)
+library(rpart)
+library(ranger)
+library(caretEnsemble)
+library(xgboost)
+```
+```{r}
+Fin2018 <- read_csv("2018Fin.csv")
+# summary(Fin2018)
+# structure(Fin2018)
+```
+
+```{r}
+Fin2018 = Fin2018 %>% dplyr::select(c( Class, `Revenue Growth`, `EPS Diluted`, `EBITDA Margin`, priceBookValueRatio, debtEquityRatio, debtRatio, `PE ratio`, Sector, `5Y Revenue Growth (per Share)`, returnOnAssets, returnOnEquity, returnOnCapitalEmployed, quickRatio))
+```
+
+```{r}
+Fin2018 = Fin2018 %>% mutate(Class =as_factor(as.character(Class)))
+Fin2018 = Fin2018 %>% mutate(Sector =as_factor(as.character(Sector)))
+```
+
+```{r}
+Fin2018 = Fin2018 %>% mutate(Class =fct_recode(Class,"No" = "0","Yes" = "1"))
+```
+
+```{r}
+Fin2018 = Fin2018 %>% drop_na()
+```
+
+```{r}
+Fin2018 = Fin2018 %>% filter(`Revenue Growth` <= 1)
+Fin2018 = Fin2018 %>% filter(`EPS Diluted` >= -10, `EPS Diluted` <= 10)
+Fin2018 = Fin2018 %>% filter(`EBITDA Margin` >= -5, `EBITDA Margin` <= 5)
+Fin2018 = Fin2018 %>% filter(priceBookValueRatio >= 0, priceBookValueRatio <= 5)
+Fin2018 = Fin2018 %>% filter(debtEquityRatio >= -1, debtEquityRatio <= 2)
+Fin2018 = Fin2018 %>% filter(debtRatio <= 1)
+Fin2018 = Fin2018 %>% filter(`PE ratio` <= 100)
+Fin2018 = Fin2018 %>% filter(returnOnAssets >= -5, returnOnAssets <= 5)
+Fin2018 = Fin2018 %>% filter(returnOnEquity >= -5, returnOnEquity <= 5)
+Fin2018 = Fin2018 %>% filter(returnOnCapitalEmployed >= -2, returnOnCapitalEmployed <= 2)
+Fin2018 = Fin2018 %>% filter(quickRatio <= 20)
+```
+
+
+```{r}
+# summary(Fin2018)
+```
+
+
+```{r}
+set.seed(12345) 
+split = createDataPartition(y = Fin2018$Class, p=0.7, list = FALSE) 
+train = dplyr::slice(Fin2018, split) 
+test =  dplyr::slice(Fin2018,-split)
+```
+
+
+```{r} 
+# start_time = Sys.time()
+# fitControl = trainControl(method = "cv", 
+#                            number = 10)
+# 
+# nnetGrid =  expand.grid(size = 1:13,
+#                         decay = c(0.5, 0.1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7))
+# set.seed(1234)
+# nnetFit = train(x=Fin2018[,-1],y=Fin2018$Class, 
+#                  method = "nnet",
+#                  trControl = fitControl,
+#                  tuneGrid = nnetGrid,
+#                  trace = FALSE)
+# 
+# end_time = Sys.time()
+# end_time-start_time
+```
+
+```{r}
+# saveRDS(nnetFit,"nnetfit.rds")
+# rm(nnetFit)
+```
+
+```{r}
+nnetFit = readRDS("nnetfit.rds")
+```
+
+```{r}
+predNet = predict(nnetFit, train)
+```
+
+```{r}
+confusionMatrix(predNet, train$Class, positive = "Yes")
+```
+
+The naive model is at 66% while our model is at 71%.  Right now we can say our model is more accurate.
+
+```{r}
+predNet = predict(nnetFit, newdata = test)
+```
+
+```{r}
+confusionMatrix(predNet, test$Class, positive = "Yes")
+```
+
+There was no change in the model between the training and testing set.  The naive model is still at 66% while our model remains 71%.
+
+```{r}
+control = trainControl(
+  method = "cv",
+  number = 5, 
+  savePredictions = "final",
+  classProbs = TRUE, 
+  summaryFunction = twoClassSummary,  
+  index=createResample(train$Class))
+```
+
+```{r}
+
+# set.seed(111)
+# model_list2 = caretList(
+#   x=train[,-1], y=train$Class, 
+#   metric = "ROC", 
+#   trControl= control, 
+#   methodList=c("glm","rpart"), 
+#    tuneList=list(
+# ranger = caretModelSpec(method="ranger", max.depth = 5, tuneGrid =
+# expand.grid(mtry = 1:13,
+# splitrule = c("gini","extratrees","hellinger"),
+# min.node.size=1:5)),
+# nn = caretModelSpec(method="nnet", tuneGrid =
+# expand.grid(size = 1:23,
+# decay = c(0.5, 0.1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7)),trace=FALSE)))
+    
+ 
+```
+
+```{r}
+# saveRDS(model_list2,"model_list2.rds")
+# rm(model_list2)
+```
+
+```{r}
+model_list2 = readRDS("model_list2.rds")
+```
+
+
+```{r}
+modelCor(resamples(model_list2))
+```
+There is a strong correlation between glm and nn,  The others are not closely correlated enough to note.  
+
+```{r}
+ensemble = caretEnsemble(model_list2, metric="ROC", trControl=control)
+```
+
+```{r}
+summary(ensemble)
+```
+
+The ensemble model's ROC is about 70%, while ranger is slightly better at almost 72%.  The ensemble model is still better than the nn, glm, and rpart models. 
+
+```{r}
+pred_ensemble = predict(ensemble, train, type = "raw")
+confusionMatrix(pred_ensemble,train$Class)
+
+pred_ensemble_test = predict(ensemble, test, type = "raw")
+confusionMatrix(pred_ensemble_test,test$Class)
+```
+
+On the training set there is an accuracy of 75%, with sensitivity at 94% and specificity at 38%.  On the testing set there is an accuracy of 68%, with sensitivity at 90% and specificity at 25%.  There is some degradation in accuracy.  
+
+```{r}
+stack = caretStack(model_list2, method = "glm", metric = "ROC",
+  trControl = trainControl(
+    method="cv",
+    number=10,
+    savePredictions="final",
+    classProbs=TRUE,
+    summaryFunction=twoClassSummary))
+  
+print(stack)
+summary(stack)
+```
+
+Ranger is a significant predictor in the final logestic regression model.  
+
+```{r}
+pred_stack = predict(stack, train, type = "raw")
+confusionMatrix(pred_stack,train$Class)
+
+
+pred_stack_test = predict(stack, test, type = "raw")
+confusionMatrix(pred_stack_test,test$Class)
+```
+
+
+There is a 75% accuracy on the training set and 68% of the testing set, which is still better than the naive model of 66%. Similar peformance to the non-stacked ensemble. 
+
+
+```{r}
+set.seed(12345) 
+train.rows = createDataPartition(y = Fin2018$Class, p=0.7, list = FALSE) 
+train2 = dplyr::slice(Fin2018,train.rows) 
+test2 = dplyr::slice(Fin2018,-train.rows)
+```
+
+```{r}
+train_dummy = dummyVars(" ~ .", data = train2)
+train_xgb = data.frame(predict(train_dummy, newdata = train2))
+
+test_dummy = dummyVars(" ~ .", data = test2) 
+test_xgb = data.frame(predict(test_dummy, newdata = test2))
+```
+
+```{r}
+train_xgb = train_xgb %>% dplyr::select(-Class.No) 
+test_xgb = test_xgb %>% dplyr::select(-Class.No)
+```
+
+```{r}
+# start_time = Sys.time() 
+# 
+# set.seed(999)
+# ctrl = trainControl(method = "cv",
+#                      number = 5)
+# fitxgb = train(as.factor(Class.Yes)~.,
+#                 data = train_xgb,
+#                 method="xgbTree",
+#                 trControl=ctrl)
+# 
+# end_time = Sys.time()
+# end_time-start_time
+```
+
+
+```{r}
+# saveRDS(fitxgb,"fitxgb.rds")
+# rm(fitxgb)
+```
+
+```{r}
+fitxgb = readRDS("fitxgb.rds")
+```
+
+```{r}
+fitxgb
+```
+
+```{r}
+predxgbtrain = predict(fitxgb, train_xgb)
+
+confusionMatrix(as.factor(train_xgb$Class.Yes), predxgbtrain,positive="1")
+```
+
+```{r}
+predxgbtest = predict(fitxgb, test_xgb)
+
+confusionMatrix(as.factor(test_xgb$Class.Yes), predxgbtest,positive="1")
+```
+
+```{r}
+# start_time = Sys.time()
+# 
+# set.seed(999)
+# ctrl = trainControl(method = "cv", number = 5) 
+# 
+# tgrid = expand.grid(
+# nrounds = 100, 
+# max_depth = c(1,2,3,4),
+# eta = c(0.01, 0.1, 0.2, 0.3),
+# gamma = 0,
+# colsample_bytree = c(0.6, 0.8, 1),
+# min_child_weight = 1,
+# subsample = c(0.8, 1))
+# 
+# fitxgb2 = train(as.factor(Class.Yes)~., data = train_xgb, method="xgbTree", tuneGrid = tgrid, trControl=ctrl)
+# 
+# 
+# end_time = Sys.time()
+# end_time-start_time
+```
+
+```{r}
+# saveRDS(fitxgb2,"fitxgb2.rds")
+# rm(fitxgb2)
+```
+
+
+```{r}
+fitxgb2 = readRDS("fitxgb2.rds")
+```
+
+```{r}
+fitxgb2
+plot(fitxgb2)
+```
+
+```{r}
+predxgbtrain2 = predict(fitxgb2, train_xgb)
+confusionMatrix(as.factor(train_xgb$Class.Yes), predxgbtrain2,positive="1")
+```
+
+```{r}
+predxgbtest2 = predict(fitxgb2, test_xgb)
+confusionMatrix(as.factor(test_xgb$Class.Yes), predxgbtest2,positive="1")
+```
+
+A naive model is more acurrate than the xgboost model in this scenario.  
